@@ -14,22 +14,26 @@ from sklearn.metrics import mean_squared_error
 from tensorflow.keras.callbacks import EarlyStopping
 import matplotlib
 import csv
+import datetime
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 from matplotlib.dates import MonthLocator, WeekdayLocator, DateFormatter
 from matplotlib.dates import MONDAY
+
 # every monday
 mondays = WeekdayLocator(MONDAY)
 # every 3rd month
-months = MonthLocator(range(1, 13), bymonthday=1, interval=3)
+months = MonthLocator(range(1, 13), bymonthday=1, interval=1)
 monthsFmt = DateFormatter("%b '%y")
 
 
-output_file_path = 'performance/lstm_performance.csv'
+FUTURE_DAYS_PREDICTION = 30
+output_file_path = 'performance/test_data_performance.csv'
 data_path = 'stock_data/done_data.csv'
 test_per = 20
 scaler = MinMaxScaler(feature_range=(0, 1))
+
 
 def makedir(dirs_used):
     for _d in dirs_used:
@@ -79,25 +83,25 @@ def create_train_data(training_set_scaled, time_step=1):
         y_train.append(training_set_scaled[i, 0])
     X_train, y_train = np.array(X_train), np.array(y_train)
     X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
-    return X_train,y_train
+    return X_train, y_train
+
+
+def create_test_data(dataset_train, dataset_test, timestep):
+    dataset_total = np.concatenate((dataset_train, dataset_test))
+    inputs = dataset_total[len(dataset_total) - len(dataset_test) - timestep:]
+    inputs = inputs.reshape(-1, 1)
+    inputs = scaler.transform(inputs)
+    X_test = []
+    for i in range(timestep, len(dataset_test) + timestep):
+        X_test.append(inputs[i - timestep:i, 0])
+    X_test = np.array(X_test)
+    X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
+    return X_test, inputs
 
 
 def feature_scaling(df):
     df_scaled = scaler.fit_transform(df)
     return df_scaled
-
-
-def create_test_data(dataset_train, dataset_test, timestep):
-    dataset_total = np.concatenate((dataset_train,dataset_test))
-    inputs = dataset_total[len(dataset_total) - len(dataset_test) -  timestep:]
-    inputs = inputs.reshape(-1,1)
-    inputs = scaler.transform(inputs)
-    X_test = []
-    for i in range(timestep, len(dataset_test)+timestep):
-        X_test.append(inputs[i- timestep:i, 0])
-    X_test = np.array(X_test)
-    X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
-    return X_test
 
 
 def model_prediction(model, X_test, X_train):
@@ -110,15 +114,56 @@ def model_prediction(model, X_test, X_train):
     return train_predict, test_predict
 
 
-def plot_results(dates, real_stock_price,predicted_stock_price, stock_name):
+def predict_future_days_price(test_data, time_steps, lstm_model):
+    index = len(test_data)- time_steps
+    previous_data_points = test_data[index:]
+    previous_data_points_reshaped = test_data[index:].reshape(1,-1)
+    temp_input = list(previous_data_points_reshaped)
+    temp_input = temp_input[0].tolist()
+    lst_output = []
+    i = 0
+    while i < FUTURE_DAYS_PREDICTION:
+        if len(temp_input) > 100:
+            x_input = np.array(temp_input[1:])
+            x_input = x_input.reshape(1, -1)
+            x_input = x_input.reshape((1, time_steps, 1))
+            y_predict = lstm_model.predict(x_input, verbose=0)
+            temp_input.extend(y_predict[0].tolist())
+            temp_input = temp_input[1:]
+        else:
+            x_input = previous_data_points_reshaped.reshape((1,time_steps, 1))
+            y_predict = lstm_model.predict(x_input, verbose=0)
+            temp_input.extend(y_predict[0].tolist())
+
+        lst_output.extend(y_predict.tolist())
+        i = i + 1
+
+    future_predictions = scaler.inverse_transform(lst_output)
+    deviation = np.std(future_predictions, dtype = np.float64)
+    return future_predictions, deviation
+
+
+def generate_dates(start_date):
+	start_date = pd.to_datetime(start_date)
+	start_date = str(start_date.date())
+	date_1 = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+	end_date = date_1 + datetime.timedelta(days=FUTURE_DAYS_PREDICTION)
+	end_date = end_date.strftime("%Y-%m-%d")
+	dates = pd.date_range(start=start_date,end=end_date).to_pydatetime().tolist()
+	formated_dates = [_date.strftime("%Y%m%d") for _date in dates]
+	return formated_dates	
+
+
+def plot_results(dates, real_stock_price, predicted_stock_price, stock_name, future_predictions, future_dates):
     ### Plotting
-    fig_handle ,ax  = plt.subplots()
-    ax.plot(dates, real_stock_price, color = 'black', label = 'Stock Price')
-    ax.plot(dates, predicted_stock_price, color = 'green', label = 'Predicted Stock Price')
+    fig_handle, ax = plt.subplots(figsize=(12, 9), tight_layout=True)
+    ax.plot(dates, real_stock_price, color='black')
+    future_dates=np.array(pd.to_datetime(future_dates, format='%Y%m%d'))
+    ax.plot(dates,predicted_stock_price,'green',future_dates, future_predictions, 'red')
     plt.xlabel("Date")
     plt.ylabel("Stock Price")
     plt.tight_layout()
-    plt.legend()
+    plt.legend(('Stock Price','Predicted Stock Price','Future '+str(FUTURE_DAYS_PREDICTION)+' days Prediction'))
     ax.xaxis.set_major_locator(months)
     ax.xaxis.set_major_formatter(monthsFmt)
     ax.xaxis.set_minor_locator(mondays)
@@ -129,16 +174,15 @@ def plot_results(dates, real_stock_price,predicted_stock_price, stock_name):
 
 
 def dump_data_to_csv(data):
-	keys = data[0].keys()
-	with open(output_file_path, 'w', newline='') as output_file:
-	    dict_writer = csv.DictWriter(output_file, keys)
-	    dict_writer.writeheader()
-	    dict_writer.writerows(data)
-
+    keys = data[0].keys()
+    with open(output_file_path, 'w', newline='') as output_file:
+        dict_writer = csv.DictWriter(output_file, keys)
+        dict_writer.writeheader()
+        dict_writer.writerows(data)
 
 
 if __name__ == '__main__':
-    makedir(['plots','performance'])
+    makedir(['plots', 'performance'])
     df = pd.read_csv(data_path, index_col=[0])
     stock_model_performance = []
     # group the data on stocks
@@ -147,26 +191,27 @@ if __name__ == '__main__':
         filtered_data = np.array(group['adjcp'].values)
         train_set, test_set = train_and_test_split(filtered_data)
         # prepare training data
-        train_set_reshaped = train_set.reshape(-1,1)
-        # print(train_set_reshaped)
+        train_set_reshaped = train_set.reshape(-1, 1)
         train_set_scaled = feature_scaling(train_set_reshaped)
         time_step = 100
         X_train, y_train = create_train_data(train_set_scaled, time_step)
         model = train_lstm(X_train, y_train)
         # prepare test data
-        X_test = create_test_data(train_set,test_set,time_step)
+        X_test, test_set_scaled = create_test_data(train_set, test_set, time_step)
         # model prediction
         train_predict, test_predict = model_prediction(model, X_test, X_train)
         filtered_dates = np.array(pd.to_datetime(group['datadate'], format='%Y%m%d'))
         filtered_dates = filtered_dates[len(train_set):len(group)]
         ### Test Data RMSE
-        rmse = math.sqrt(mean_squared_error(test_set,test_predict))
-        print("rmse == ", rmse)
-        plot_results(filtered_dates, test_set,test_predict, name)
-        performance = {'stock_name': name, 
-        				'RMSE (root mean square error)':rmse
-        			}
-        stock_model_performance.append(performance)
+        rmse = math.sqrt(mean_squared_error(test_set, test_predict))
 
+        performance = {'stock_name': name,
+                       'RMSE (root mean square error)': rmse
+                       }
+        stock_model_performance.append(performance)
+        future_predictions, deviation = predict_future_days_price(test_set_scaled, time_step, model)
+        future_dates = generate_dates(filtered_dates[-1])
+        future_dates = np.array(future_dates[1:])
+        plot_results(filtered_dates, test_set, test_predict, name, future_predictions, future_dates)
         # break
     dump_data_to_csv(stock_model_performance)
