@@ -20,6 +20,10 @@ import matplotlib.pyplot as plt
 import os
 from matplotlib.dates import MonthLocator, WeekdayLocator, DateFormatter
 from matplotlib.dates import MONDAY
+# from statsmodels.graphics.gofplots import qqplots
+import statsmodels.api as sm
+import matplotlib.lines as mlines
+
 
 # every monday
 mondays = WeekdayLocator(MONDAY)
@@ -31,7 +35,7 @@ monthsFmt = DateFormatter("%b '%y")
 FUTURE_DAYS_PREDICTION = 30
 output_file_path = 'performance/test_data_performance.csv'
 data_path = 'stock_data/done_data.csv'
-test_per = 20
+test_per = 10
 scaler = MinMaxScaler(feature_range=(0, 1))
 
 
@@ -81,6 +85,8 @@ def create_train_data(training_set_scaled, time_step=1):
     for i in range(time_step, len(training_set_scaled)):
         X_train.append(training_set_scaled[i - time_step:i, 0])
         y_train.append(training_set_scaled[i, 0])
+    # print(X_train)
+    # print(y_train)
     X_train, y_train = np.array(X_train), np.array(y_train)
     X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
     return X_train, y_train
@@ -144,14 +150,14 @@ def predict_future_days_price(test_data, time_steps, lstm_model):
 
 
 def generate_dates(start_date):
-	start_date = pd.to_datetime(start_date)
-	start_date = str(start_date.date())
-	date_1 = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-	end_date = date_1 + datetime.timedelta(days=FUTURE_DAYS_PREDICTION)
-	end_date = end_date.strftime("%Y-%m-%d")
-	dates = pd.date_range(start=start_date,end=end_date).to_pydatetime().tolist()
-	formated_dates = [_date.strftime("%Y%m%d") for _date in dates]
-	return formated_dates	
+    start_date = pd.to_datetime(start_date)
+    start_date = str(start_date.date())
+    date_1 = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+    end_date = date_1 + datetime.timedelta(days=FUTURE_DAYS_PREDICTION)
+    end_date = end_date.strftime("%Y-%m-%d")
+    dates = pd.date_range(start=start_date,end=end_date).to_pydatetime().tolist()
+    formated_dates = [_date.strftime("%Y%m%d") for _date in dates]
+    return formated_dates	
 
 
 def plot_results(dates, real_stock_price, predicted_stock_price, stock_name, future_predictions, future_dates):
@@ -170,7 +176,8 @@ def plot_results(dates, real_stock_price, predicted_stock_price, stock_name, fut
     ax.autoscale_view()
     ax.grid(True)
     fig_handle.autofmt_xdate()
-    plt.savefig(f"plots/{stock_name}.png")
+    plt.savefig(f"plots/{stock_name}/prediction_plot.png")
+    plt.close(fig_handle)
 
 
 def dump_data_to_csv(data):
@@ -181,13 +188,76 @@ def dump_data_to_csv(data):
         dict_writer.writerows(data)
 
 
+def calculate_residual_error(true_values, predicted_values,stock_path):
+    residual_error = np.subtract(true_values, predicted_values)
+    # print(true_values, predicted_values)
+    residuals = pd.DataFrame(residual_error.flatten(), columns=['errors'])
+    error_statistics = residuals.describe()
+    # print(error_statistics)
+    # print(error_statistics.loc['mean'])
+    # # summary statistics
+    # print(residuals.describe())
+    # print(type(residuals.describe()))
+    # print(residuals)
+    fig, axes = plt.subplots(figsize=(12, 9))
+    axes.plot(residuals)
+    fig.suptitle('Test Error Line Plot')
+    plt.savefig(f"{stock_path}/error_line_plot.png")
+    plt.close(fig)
+
+    fig= plt.figure(figsize=(12, 9))
+    residuals.plot(kind='kde')
+    plt.title("Test Error Density Plot")
+    plt.savefig(f"{stock_path}/error_density_plot.png")
+    plt.close(fig)
+
+
+    # fig, axes = plt.subplots(figsize=(12, 9))
+    fig = sm.qqplot(residuals)
+    fig.suptitle('Test Error QQ Plot', fontsize=12)
+    plt.savefig(f"{stock_path}/error_qq_plot.png")
+    plt.close(fig)
+    error_max = error_statistics.loc['max'].values[0]
+    error_min = error_statistics.loc['min'].values[0]
+    error_mean = error_statistics.loc['mean'].values[0]
+    error_std = error_statistics.loc['std'].values[0]
+    error_median = error_statistics.loc['50%'].values[0]
+    # df = pd.DataFrame(dict(min=error_min, max=error_max, mean=error_mean, std=error_std))
+    fig = plt.figure(figsize=(9, 6))   
+    plt.boxplot(residuals['errors'], showmeans=True)
+    # plt.text(3, 0.07,
+    #      str(error_mean),
+    #      bbox=dict(facecolor='red',
+    #                alpha=0.5),
+    #      fontsize=12)
+    triangle = mlines.Line2D([], [], color='mediumseagreen', marker='^', linestyle='None',
+                          markersize=10, label='Mean (%.3f)' %error_mean)
+    line = mlines.Line2D([], [], color='orange', marker='_', linestyle='None',
+                          markersize=10, label='Median (%.3f)' %error_median)
+
+    plt.legend(handles=[line, triangle])
+    # plt.legend()
+    plt.savefig(f"{stock_path}/error_box_plot.png")
+    plt.close(fig)
+    # print(error_statistics.loc['mean'])
+    return error_mean,error_std
+
+
+def callculate_stock_weight(current_stock_value, stock_value):
+    # print(current_stock_value)
+    # print(stock_value)
+    return ((current_stock_value-stock_value) / abs(stock_value)) * 100
+
 if __name__ == '__main__':
     makedir(['plots', 'performance'])
     df = pd.read_csv(data_path, index_col=[0])
     stock_model_performance = []
     # group the data on stocks
     stock_groups = df.groupby('tic')
+    stock_count = 0 
     for name, group in stock_groups:
+        makedir([f'plots/{name}'])
+        stock_count += 1
         filtered_data = np.array(group['adjcp'].values)
         train_set, test_set = train_and_test_split(filtered_data)
         # prepare training data
@@ -200,18 +270,36 @@ if __name__ == '__main__':
         X_test, test_set_scaled = create_test_data(train_set, test_set, time_step)
         # model prediction
         train_predict, test_predict = model_prediction(model, X_test, X_train)
+        ### Test Data Standard Deviation
+        test_dev = np.std(test_predict, dtype = np.float64)
+        ### Test Data RMSE
+        mse = mean_squared_error(test_set, test_predict)
+        rmse = math.sqrt(mse)
+        ### Test Data MAE
+        mae = mean_absolute_error(test_set, test_predict)
+
+
         filtered_dates = np.array(pd.to_datetime(group['datadate'], format='%Y%m%d'))
         filtered_dates = filtered_dates[len(train_set):len(group)]
-        ### Test Data RMSE
-        rmse = math.sqrt(mean_squared_error(test_set, test_predict))
-
-        performance = {'stock_name': name,
-                       'RMSE (root mean square error)': rmse
-                       }
-        stock_model_performance.append(performance)
         future_predictions, deviation = predict_future_days_price(test_set_scaled, time_step, model)
         future_dates = generate_dates(filtered_dates[-1])
         future_dates = np.array(future_dates[1:])
+        # print(filtered_dates[-1], "  ", future_dates[0])
         plot_results(filtered_dates, test_set, test_predict, name, future_predictions, future_dates)
+        mean_forecast_error, std_forecast_error  = calculate_residual_error(test_set, test_predict,f'plots/{name}')
+        # print(future_predictions)
+        stock_weight = callculate_stock_weight(future_predictions[-1],test_predict[-1])
+        performance = {
+                        'stock name': name,
+                        'MSE (mean square error)': mse,
+                        'RMSE (root mean square error)': rmse,
+                        'MAE (mean absolute error)' : mae,
+                        'Mean Forecast Error' : mean_forecast_error,
+                        'Standard Deviation Forecast Error' : std_forecast_error,
+                        'stock_weight' : stock_weight[0]
+                    }
+        stock_model_performance.append(performance)
         # break
+        if stock_count == 50:
+            break
     dump_data_to_csv(stock_model_performance)
