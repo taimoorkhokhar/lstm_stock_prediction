@@ -23,6 +23,7 @@ from matplotlib.dates import MONDAY
 # from statsmodels.graphics.gofplots import qqplots
 import statsmodels.api as sm
 import matplotlib.lines as mlines
+import copy
 
 
 # every monday
@@ -38,10 +39,10 @@ data_path = 'stock_data/done_data.csv'
 test_per = 10
 scaler = MinMaxScaler(feature_range=(0, 1))
 prediction_days_ahead= {
-                        '1_day':1,
-                        '3_days':3,
-                        '1_week':7,
-                        '1_month':30 
+                         '1_day':1
+                        ,'3_days':3
+                        ,'1_week':7
+                        ,'1_month':30 
                         }
 
 def makedir(dirs_used):
@@ -112,9 +113,13 @@ def create_test_data(dataset_train, dataset_test, timestep, n_days_ahead):
     for i in range(timestep, len(dataset_test) + timestep):
         # print(i - timestep,i)
         output = inputs[i:i+n_days_ahead, 0]
+        X_test.append(inputs_scaled[i - timestep:i, 0])
+        # y_test.append(output)
         if len(output) == n_days_ahead:
-            X_test.append(inputs_scaled[i - timestep:i, 0])
+            # X_test.append(inputs_scaled[i - timestep:i, 0])
             y_test.append(output)
+        # else:
+        #     print("==== OUTPUT FOUND ====", len(output))
     X_test = np.array(X_test)
     y_test = np.array(y_test)
     X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
@@ -165,29 +170,30 @@ def predict_future_days_price(test_data, time_steps, lstm_model,n_days_ahead):
     lst_output = np.array(lst_output).reshape(1,-1)
     future_predictions = scaler.inverse_transform(lst_output)
     deviation = np.std(future_predictions, dtype = np.float64)
-    print(future_predictions)
-    print('future_predictions',len(future_predictions))
+    # print(future_predictions)
+    # print('future_predictions',len(future_predictions))
     # exit()
     return future_predictions, deviation
 
 
-def generate_dates(start_date):
+def generate_dates(start_date, days_ahead):
     start_date = pd.to_datetime(start_date)
     start_date = str(start_date.date())
     date_1 = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-    end_date = date_1 + datetime.timedelta(days=FUTURE_DAYS_PREDICTION)
+    end_date = date_1 + datetime.timedelta(days=days_ahead)
     end_date = end_date.strftime("%Y-%m-%d")
-    dates = pd.date_range(start=start_date,end=end_date).to_pydatetime().tolist()
+    # generate buisnes dates
+    dates = pd.bdate_range(start=start_date,periods=days_ahead+1).to_pydatetime().tolist()
     formated_dates = [_date.strftime("%Y%m%d") for _date in dates]
-    return formated_dates	
+    return np.array(pd.to_datetime(formated_dates[1:] , format='%Y%m%d'))  
 
 
 def plot_results(dates, real_stock_price, predicted_stock_price, stock_name):
     ### Plotting
     fig_handle, ax = plt.subplots(figsize=(12, 9), tight_layout=True)
-    ax.plot(dates, real_stock_price, color='black')
+    ax.plot(dates[:len(real_stock_price)], real_stock_price, color='black')
     # future_dates=np.array(pd.to_datetime(future_dates, format='%Y%m%d'))
-    ax.plot(dates,predicted_stock_price,'green')
+    ax.plot(dates[len(dates)-len(predicted_stock_price):],predicted_stock_price,'green')
     plt.xlabel("Date")
     plt.ylabel("Stock Price")
     plt.tight_layout()
@@ -259,6 +265,7 @@ def calculate_residual_error(true_values, predicted_values,stock_path):
 def callculate_stock_weight(current_stock_value, stock_value):
     return ((current_stock_value-stock_value) / abs(stock_value)) * 100
 
+
 def line_plot_for_multistep(rmse, n_days,  stock_plot_path):
     days = [f'Day {i+1}' for i in range(n_days)]
     fig_handle, ax = plt.subplots(figsize=(12, 9), tight_layout=True)
@@ -273,7 +280,7 @@ def line_plot_for_multistep(rmse, n_days,  stock_plot_path):
     plt.clf()
 
 
-def calculate_error_and_plot(test, forecasts, n_seq, stock_plot_path,test_data_dates):
+def calculate_error_and_plot(test, forecasts, n_seq, stock_plot_path,test_data_dates,filtered_data):
     rmse=[]
     mae = []
     mse = []
@@ -282,6 +289,8 @@ def calculate_error_and_plot(test, forecasts, n_seq, stock_plot_path,test_data_d
     for i in range(n_seq):
         actual = [row[i] for row in test]
         predicted = [forecast[i] for forecast in forecasts]
+        all_predictions = copy.deepcopy(predicted)
+        predicted = predicted[:len(actual)]
         if n_seq != 1:
             day_plot_path = f'{stock_plot_path}/{i+1}_day'
         else:
@@ -295,7 +304,11 @@ def calculate_error_and_plot(test, forecasts, n_seq, stock_plot_path,test_data_d
         mfe.append(mean_forecast_error)
         sfe.append(std_forecast_error)
         # if test_data_dates > len(predicted)
-        plot_results(test_data_dates, actual, predicted, day_plot_path)
+        # print(test_data_dates)
+        dates_for_the_day = copy.deepcopy(test_data_dates)
+        additional_dates_for_the_day = generate_dates(dates_for_the_day[-1],i)
+        dates_for_the_day = np.append(dates_for_the_day,additional_dates_for_the_day)
+        plot_results(dates_for_the_day, filtered_data, all_predictions, day_plot_path)
     s = 0
     test = np.array(test)
     forecasts = np.array(forecasts)
@@ -308,6 +321,7 @@ def calculate_error_and_plot(test, forecasts, n_seq, stock_plot_path,test_data_d
     if n_seq >1:
         line_plot_for_multistep(rmse, n_seq,  stock_plot_path)
     return overall_rmse, rmse, mae, mse,mfe,sfe
+
 
 if __name__ == '__main__':
     makedir(['plots', 'performance'])
@@ -333,15 +347,14 @@ if __name__ == '__main__':
             # print("training_loss", training_loss)
             # prepare test data
             X_test, test_set_scaled , y_test= create_test_data(train_set, test_set, time_step,n_days_ahead)
+
             # model prediction
             train_predict, test_predict = model_prediction(model, X_test, X_train)
+
             filtered_dates = np.array(pd.to_datetime(group['datadate'], format='%Y%m%d'))
             test_data_dates = filtered_dates[len(train_set):len(group)]
-            test_data_dates = filtered_dates[:test_predict.shape[0]]
-            # print(X_test.shape)
-            # print(test_predict.shape)
-            # print(len(test_data_dates))
-            overall_rmse , rmse, mae, mse,mfe,sfe = calculate_error_and_plot(y_test, test_predict, n_days_ahead, stock_plot_path,test_data_dates)
+            test_filtered_data = filtered_data[len(train_set):len(group)]
+            overall_rmse , rmse, mae, mse,mfe,sfe = calculate_error_and_plot(y_test, test_predict, n_days_ahead, stock_plot_path,test_data_dates,test_filtered_data)
             performance = {
                             'stock name': name,
                             'training_loss': training_loss
