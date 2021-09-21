@@ -6,12 +6,9 @@ from tensorflow.keras.layers import LSTM
 from tensorflow.keras.layers import Dropout
 from tensorflow.keras.layers import *
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error
 from sklearn.metrics import mean_absolute_error
-from sklearn.model_selection import train_test_split
 import math
 from sklearn.metrics import mean_squared_error
-from tensorflow.keras.callbacks import EarlyStopping
 import matplotlib
 import csv
 import datetime
@@ -20,11 +17,10 @@ import matplotlib.pyplot as plt
 import os
 from matplotlib.dates import MonthLocator, WeekdayLocator, DateFormatter
 from matplotlib.dates import MONDAY
-# from statsmodels.graphics.gofplots import qqplots
 import statsmodels.api as sm
 import matplotlib.lines as mlines
 import copy
-
+from data_prep import create_train_data, create_test_data
 
 # every monday
 mondays = WeekdayLocator(MONDAY)
@@ -42,7 +38,7 @@ prediction_days_ahead= {
                          '1_day':1
                         ,'3_days':3
                         ,'1_week':7
-                        ,'1_month':30 
+                        ,'1_month':30
                         }
 
 def makedir(dirs_used):
@@ -66,7 +62,7 @@ def train_lstm(X_train, y_train):
     model.add(LSTM(units=50))
     model.add(Dropout(0.2))
     # Adding the output layer
-    model.add(Dense(y_train.shape[1]))
+    model.add(Dense(units=1))
 
     # Compiling the RNN
     model.compile(optimizer='adam', loss='mean_squared_error')
@@ -82,52 +78,6 @@ def train_and_test_split(df):
     training_data, test_data = df[0:train_size], df[train_size:len(df)]
     return training_data, test_data
 
-
-# convert an array of values into a dataset matrix
-def create_train_data(training_set_scaled, time_step, n_days_ahead):
-    # Creating a data structure with 60 time-steps and 1 output
-    X_train = []
-    y_train = []
-    for i in range(time_step, len(training_set_scaled)):
-        # print(i - time_step,i)
-        output = training_set_scaled[i:i+n_days_ahead, 0]
-        if len(output) ==  n_days_ahead:
-            X_train.append(training_set_scaled[i - time_step:i, 0])
-            y_train.append(output)
-
-    X_train, y_train = np.array(X_train), np.array(y_train)
-    # print(X_train.shape)
-    # print(y_train.shape)
-    X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
-    return X_train, y_train
-
-
-def create_test_data(dataset_train, dataset_test, timestep, n_days_ahead):
-    dataset_total = np.concatenate((dataset_train, dataset_test))
-    inputs = dataset_total[len(dataset_total) - len(dataset_test) - timestep:]
-    inputs = inputs.reshape(-1, 1)
-    inputs_scaled = scaler.transform(inputs)
-    X_test = []
-    y_test = []
-    # print("inputs", inputs)
-    for i in range(timestep, len(dataset_test) + timestep):
-        # print(i - timestep,i)
-        output = inputs[i:i+n_days_ahead, 0]
-        X_test.append(inputs_scaled[i - timestep:i, 0])
-        # y_test.append(output)
-        if len(output) == n_days_ahead:
-            # X_test.append(inputs_scaled[i - timestep:i, 0])
-            y_test.append(output)
-        # else:
-        #     print("==== OUTPUT FOUND ====", len(output))
-    X_test = np.array(X_test)
-    y_test = np.array(y_test)
-    X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
-    y_test = np.reshape(y_test, (y_test.shape[0], y_test.shape[1]))
-    # print(y_test)
-    return X_test, inputs,y_test
-
-
 def feature_scaling(df):
     df_scaled = scaler.fit_transform(df)
     return df_scaled
@@ -135,14 +85,12 @@ def feature_scaling(df):
 
 def model_prediction(model, X_test, X_train):
     ### Lets Do the prediction and check performance metrics
-    train_predict = model.predict(X_train)
-    test_predict = model.predict(X_test)
+    train_pred = model.predict(X_train)
+    test_pred = model.predict(X_test)
     ##Transformback to original form
-    # print("test_predict ", X_test)
-    train_predict = scaler.inverse_transform(train_predict)
-    test_predict = scaler.inverse_transform(test_predict)
-    # print("test_predict ", test_predict)
-    return train_predict, test_predict
+    train_pred = scaler.inverse_transform(train_pred)
+    test_pred = scaler.inverse_transform(test_pred)
+    return train_pred, test_pred
 
 
 def predict_future_days_price(test_data, time_steps, lstm_model,n_days_ahead):
@@ -185,7 +133,7 @@ def generate_dates(start_date, days_ahead):
     # generate buisnes dates
     dates = pd.bdate_range(start=start_date,periods=days_ahead+1).to_pydatetime().tolist()
     formated_dates = [_date.strftime("%Y%m%d") for _date in dates]
-    return np.array(pd.to_datetime(formated_dates[1:] , format='%Y%m%d'))  
+    return np.array(pd.to_datetime(formated_dates[1:] , format='%Y%m%d'))
 
 
 def plot_results(dates, real_stock_price, predicted_stock_price, stock_name):
@@ -245,7 +193,7 @@ def calculate_residual_error(true_values, predicted_values,stock_path):
     error_mean = error_statistics.loc['mean'].values[0]
     error_std = error_statistics.loc['std'].values[0]
     error_median = error_statistics.loc['50%'].values[0]
-    fig = plt.figure(figsize=(9, 6))   
+    fig = plt.figure(figsize=(9, 6))
     plt.boxplot(residuals['errors'], showmeans=True)
     triangle = mlines.Line2D([], [], color='mediumseagreen', marker='^', linestyle='None',
                           markersize=10, label='Mean (%.3f)' %error_mean)
@@ -253,74 +201,15 @@ def calculate_residual_error(true_values, predicted_values,stock_path):
                           markersize=10, label='Median (%.3f)' %error_median)
 
     plt.legend(handles=[line, triangle])
-    # plt.legend()
     plt.savefig(f"{stock_path}/error_box_plot.png")
     plt.close(fig)
-
     plt.clf()
-    # print(error_statistics.loc['mean'])
     return error_mean,error_std
 
 
 def callculate_stock_weight(current_stock_value, stock_value):
     return ((current_stock_value-stock_value) / abs(stock_value)) * 100
 
-
-def line_plot_for_multistep(rmse, n_days,  stock_plot_path):
-    days = [f'Day {i+1}' for i in range(n_days)]
-    fig_handle, ax = plt.subplots(figsize=(12, 9), tight_layout=True)
-    ax.plot(days, rmse)
-    plt.xlabel("Days")
-    plt.ylabel("RMSE")
-    plt.tight_layout()
-    ax.legend(('Line Plot of RMSE for ' + str(n_days)+ ' days ahead prediction',))
-    fig_handle.autofmt_xdate()
-    plt.savefig(f"{stock_plot_path}/line_plot_rmse.png")
-    plt.close(fig_handle)
-    plt.clf()
-
-
-def calculate_error_and_plot(test, forecasts, n_seq, stock_plot_path,test_data_dates,filtered_data):
-    rmse=[]
-    mae = []
-    mse = []
-    mfe = []
-    sfe = []
-    for i in range(n_seq):
-        actual = [row[i] for row in test]
-        predicted = [forecast[i] for forecast in forecasts]
-        all_predictions = copy.deepcopy(predicted)
-        predicted = predicted[:len(actual)]
-        if n_seq != 1:
-            day_plot_path = f'{stock_plot_path}/{i+1}_day'
-        else:
-            day_plot_path = f'{stock_plot_path}'
-        makedir([day_plot_path])
-        mse_for_day = mean_squared_error(actual, predicted)
-        mse.append(mse_for_day)
-        rmse.append(math.sqrt(mse_for_day))
-        mae.append(mean_absolute_error(actual, predicted))
-        mean_forecast_error, std_forecast_error = calculate_residual_error(actual, predicted,day_plot_path)
-        mfe.append(mean_forecast_error)
-        sfe.append(std_forecast_error)
-        # if test_data_dates > len(predicted)
-        # print(test_data_dates)
-        dates_for_the_day = copy.deepcopy(test_data_dates)
-        additional_dates_for_the_day = generate_dates(dates_for_the_day[-1],i)
-        dates_for_the_day = np.append(dates_for_the_day,additional_dates_for_the_day)
-        plot_results(dates_for_the_day, filtered_data, all_predictions, day_plot_path)
-    s = 0
-    test = np.array(test)
-    forecasts = np.array(forecasts)
-    # print(test.shape)
-    for row in range(test.shape[0]):
-        for col in range(test.shape[1]):
-            s += (test[row, col] - forecasts[row, col])**2
-    overall_rmse = math.sqrt(s / (test.shape[0] * test.shape[1]))
-    # print("score", overall_rmse)
-    if n_seq >1:
-        line_plot_for_multistep(rmse, n_seq,  stock_plot_path)
-    return overall_rmse, rmse, mae, mse,mfe,sfe
 
 
 if __name__ == '__main__':
@@ -344,32 +233,35 @@ if __name__ == '__main__':
             X_train, y_train = create_train_data(train_set_scaled, time_step,n_days_ahead)
             model, history = train_lstm(X_train, y_train)
             training_loss = history.history.get("loss", [0])[-1]
-            # print("training_loss", training_loss)
             # prepare test data
-            X_test, test_set_scaled , y_test= create_test_data(train_set, test_set, time_step,n_days_ahead)
-
+            X_test, test_set_scaled , y_test= create_test_data(train_set, test_set, time_step,n_days_ahead, scaler)
             # model prediction
-            train_predict, test_predict = model_prediction(model, X_test, X_train)
-
+            train_predict, test_predict_complete = model_prediction(model, X_test, X_train)
             filtered_dates = np.array(pd.to_datetime(group['datadate'], format='%Y%m%d'))
             test_data_dates = filtered_dates[len(train_set):len(group)]
             test_filtered_data = filtered_data[len(train_set):len(group)]
-            overall_rmse , rmse, mae, mse,mfe,sfe = calculate_error_and_plot(y_test, test_predict, n_days_ahead, stock_plot_path,test_data_dates,test_filtered_data)
+            test_predict = test_predict_complete[:len(y_test)]
+            ### Test Data RMSE
+            test_dev = np.std(test_predict, dtype=np.float64)
+            mse = mean_squared_error(y_test, test_predict)
+            rmse = math.sqrt(mse)
+            ### Test Data MAE
+            mae = mean_absolute_error(y_test, test_predict)
+            mean_forecast_error, std_forecast_error = calculate_residual_error(y_test, test_predict, f'{stock_plot_path}')
+            dates_for_the_day = copy.deepcopy(test_data_dates)
+            n_dates_to_generate = len(test_predict_complete)- len(y_test)
+            additional_dates_for_the_day = generate_dates(dates_for_the_day[-1],n_dates_to_generate)
+            dates_for_the_day = np.append(dates_for_the_day, additional_dates_for_the_day)
+            plot_results(dates_for_the_day, test_set, test_predict_complete, f'{stock_plot_path}')
             performance = {
-                            'stock name': name,
-                            'training_loss': training_loss
-                        }
-            for i in range(n_days_ahead):
-                if n_days_ahead != 1:
-                    text = f'{i+1} Day'
-                    performance.update({f"overall RMSE":overall_rmse})
-                else:
-                    text = ''
-                performance.update({f"{text} (RMSE (root mean square error))":rmse[i]})
-                performance.update({f"{text} (MSE (mean square error))":mse[i]})
-                performance.update({f"{text} (MAE (mean absolute error))":mae[i]})
-                performance.update({f"{text} (Mean Forecast Error)":mfe[i]})
-                performance.update({f"{text} (Standard Deviation Forecast Error)":sfe[i]})
+                'stock name': name,
+                'MSE (mean square error)': mse,
+                'RMSE (root mean square error)': rmse,
+                'MAE (mean absolute error)': mae,
+                'Mean Forecast Error': mean_forecast_error,
+                'Standard Deviation Forecast Error': std_forecast_error
+            }
+
 
             stock_model_performance.append(performance)
             # break
